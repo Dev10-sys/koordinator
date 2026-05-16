@@ -44,6 +44,7 @@ import (
 	"github.com/koordinator-sh/koordinator/pkg/scheduler/frameworkext/workloadauditor"
 	"github.com/koordinator-sh/koordinator/pkg/scheduler/plugins/coscheduling/util"
 	reservationutil "github.com/koordinator-sh/koordinator/pkg/util/reservation"
+	listerschedulingv1alpha1 "k8s.io/client-go/listers/scheduling/v1alpha1"
 )
 
 type Status string
@@ -95,6 +96,8 @@ type PodGroupManager struct {
 	pgClient pgclientset.Interface
 	// pgLister is podgroup lister
 	pgLister pglister.PodGroupLister
+	// workloadLister is native workload lister
+	workloadLister listerschedulingv1alpha1.WorkloadLister
 	// podLister is pod lister
 	podLister listerv1.PodLister
 	// cache stores gang info
@@ -117,14 +120,16 @@ func NewPodGroupManager(
 ) *PodGroupManager {
 	pgInformer := pgSharedInformerFactory.Scheduling().V1alpha1().PodGroups()
 	podInformer := sharedInformerFactory.Core().V1().Pods()
-	gangCache := NewGangCache(args, podInformer.Lister(), pgInformer.Lister(), pgClient, handle)
+	workloadInformer := sharedInformerFactory.Scheduling().V1alpha1().Workloads()
+	gangCache := NewGangCache(args, podInformer.Lister(), pgInformer.Lister(), workloadInformer.Lister(), pgClient, handle)
 	pgMgr := &PodGroupManager{
-		handle:    handle,
-		args:      args,
-		pgClient:  pgClient,
-		pgLister:  pgInformer.Lister(),
-		podLister: podInformer.Lister(),
-		cache:     gangCache,
+		handle:         handle,
+		args:           args,
+		pgClient:       pgClient,
+		pgLister:       pgInformer.Lister(),
+		workloadLister: workloadInformer.Lister(),
+		podLister:      podInformer.Lister(),
+		cache:          gangCache,
 	}
 	if extHandle, ok := handle.(frameworkext.ExtendedHandle); ok {
 		pgMgr.workloadAuditor = extHandle.GetWorkloadAuditor()
@@ -141,6 +146,13 @@ func NewPodGroupManager(
 		DeleteFunc: gangCache.onPodGroupDelete,
 	}
 	frameworkexthelper.ForceSyncFromInformer(context.TODO().Done(), pgSharedInformerFactory, pgInformer.Informer(), podGroupEventHandler)
+
+	workloadEventHandler := cache.ResourceEventHandlerFuncs{
+		AddFunc:    gangCache.onWorkloadAdd,
+		UpdateFunc: gangCache.onWorkloadUpdate,
+		DeleteFunc: gangCache.onWorkloadDelete,
+	}
+	frameworkexthelper.ForceSyncFromInformer(context.TODO().Done(), sharedInformerFactory, workloadInformer.Informer(), workloadEventHandler)
 
 	podEventHandler := cache.ResourceEventHandlerFuncs{
 		AddFunc:    gangCache.onPodAdd,
